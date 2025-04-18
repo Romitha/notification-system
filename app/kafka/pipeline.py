@@ -3,6 +3,7 @@ from app.config import settings
 import json
 from kafka import KafkaProducer
 from kafka.errors import KafkaError
+from fastapi.encoders import jsonable_encoder
 
 class KafkaPipeline:
     """Handles sending notifications to Kafka topics based on priority"""
@@ -17,21 +18,26 @@ class KafkaPipeline:
             Priority.MEDIUM: "notifications-medium",
             Priority.LOW: "notifications-low"
         }
-    
-    async def send_notification(self, notification: Notification) -> bool:
+
+    async def send_notification(self, notification) -> bool:
         """Send notification to appropriate Kafka topic based on priority"""
-        topic = self.topics.get(notification.priority)
-        
+        # Handle both Notification objects and dictionaries
+        if isinstance(notification, dict):
+            priority = notification.get("priority")
+            notification_data = notification  # Already a dict
+        else:
+            priority = notification.priority
+            # Use jsonable_encoder instead of .dict() to handle datetime serialization
+            notification_data = jsonable_encoder(notification)
+
+        topic = self.topics.get(priority)
+
         try:
-            # Convert to dict for serialization
-            notification_data = notification.dict()
-            
             # Send to Kafka
             future = self.producer.send(topic, notification_data)
-            result = future.get(timeout=60)  # Wait for message to be delivered
+            result = future.get(timeout=60)
             return True
         except KafkaError as e:
-            # Log error
             print(f"Error sending to Kafka: {e}")
             return False
     

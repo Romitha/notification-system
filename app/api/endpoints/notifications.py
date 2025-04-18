@@ -1,10 +1,47 @@
 from fastapi import APIRouter, HTTPException, Depends, Query
 from typing import List, Optional
-from app.models.notification import Notification, NotificationStatus
+from app.models.notification import Notification, NotificationStatus, DeliveryChannel
 from app.core.notification_service import NotificationService
+from pydantic import BaseModel, EmailStr
+from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
 
 router = APIRouter()
 notification_service = NotificationService()
+
+
+class EmailNotificationRequest(BaseModel):
+    recipient_email: EmailStr
+    subject: str
+    content: str
+    template_id: Optional[str] = None
+    metadata: Optional[dict] = {}
+
+
+@router.post("/email", response_model=Notification)
+async def send_email_notification(email_req: EmailNotificationRequest):
+    """Send a single email notification"""
+    try:
+        # Create notification object
+        notification = Notification(
+            type="single",
+            priority="medium",
+            title=email_req.subject,
+            content=email_req.content,
+            template_id=email_req.template_id,
+            channels=[DeliveryChannel.EMAIL],
+            recipients=[email_req.recipient_email],
+            metadata=email_req.metadata
+        )
+
+        # Send the notification
+        created_notification = await notification_service.create_notification(notification)
+        # 🔍 Debug output before serialization
+        print("✅ CREATED NOTIFICATION (raw):", created_notification)
+        return created_notification
+    except Exception as e:
+        print("❌ EXCEPTION:", str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/", response_model=Notification)
 async def create_notification(notification: Notification):

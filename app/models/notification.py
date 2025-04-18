@@ -45,6 +45,9 @@ class Notification(BaseModel):
     metadata: Optional[dict] = {}
     
     class Config:
+        json_encoders = {
+            datetime: lambda dt: dt.isoformat()
+        }
         schema_extra = {
             "example": {
                 "type": "single",

@@ -1,6 +1,7 @@
 from typing import List
 from app.models.notification import Notification, Priority
 from app.kafka.pipeline import KafkaPipeline
+from fastapi.encoders import jsonable_encoder
 
 class CompositeService:
     """
@@ -13,23 +14,24 @@ class CompositeService:
     
     def __init__(self):
         self.kafka_pipeline = KafkaPipeline()
-    
+
     async def process_notification(self, notification: Notification) -> None:
         """Process a notification through validation, prioritization and send to Kafka pipeline"""
         # 1. Validate notification
         is_valid = await self.validate_notification(notification)
         if not is_valid:
-            # Update notification status
             return
-        
+
         # 2. Set priority based on content and rules
         await self.set_priority(notification)
-        
-        # 3. Send to Kafka pipeline based on priority
+
+        # 3. Send to Kafka pipeline - let the pipeline handle serialization
         await self.kafka_pipeline.send_notification(notification)
-    
+
     async def schedule_notification(self, notification: Notification) -> None:
         """Schedule a notification for later delivery"""
+        # Convert to JSON-serializable dict
+        serializable_notification = jsonable_encoder(notification)
         # Add to scheduled queue
         pass
     

@@ -26,4 +26,13 @@ class Settings(BaseSettings):
     DRUPAL_USERNAME: str = os.getenv("DRUPAL_USERNAME", "")
     DRUPAL_PASSWORD: str = os.getenv("DRUPAL_PASSWORD", "")
 
+    # Email settings
+    USE_FIREBASE_EMAIL: bool = os.getenv("USE_FIREBASE_EMAIL", "False") == "True"
+    SMTP_SERVER: str = os.getenv("SMTP_SERVER", "smtp.example.com")
+    SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
+    SMTP_USERNAME: str = os.getenv("SMTP_USERNAME", "")
+    SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
+    SMTP_FROM_EMAIL: str = os.getenv("SMTP_FROM_EMAIL", "notifications@example.com")
+    SMTP_USE_TLS: bool = os.getenv("SMTP_USE_TLS", "True") == "True"
+
 settings = Settings()
