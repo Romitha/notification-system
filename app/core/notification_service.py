@@ -3,7 +3,7 @@ from datetime import datetime
 from app.models.notification import Notification, NotificationType
 from app.core.composite_service import CompositeService
 from app.core.template_service import TemplateService
-
+import uuid
 class NotificationService:
     """Service to manage notifications"""
 
@@ -51,19 +51,32 @@ class NotificationService:
 
         return notification
 
-    async def create_bulk_notification(self, notification: Notification, recipient_groups: List[List[str]]) -> List[Notification]:
+    async def create_bulk_notification(self, notification: Notification, recipient_groups: List[List[str]]) -> List[
+        Notification]:
         """Create notifications for multiple recipient groups"""
         notifications = []
-        
+
         for recipients in recipient_groups:
             bulk_notification = Notification(
                 **notification.dict(exclude={"id", "recipients"}),
                 recipients=recipients,
                 type=NotificationType.BULK
             )
+
+            # Add a batch ID to the metadata to track related notifications
+            if not bulk_notification.metadata:
+                bulk_notification.metadata = {}
+
+            # Add a batch ID if not already present
+            if "batch_id" not in bulk_notification.metadata:
+                bulk_notification.metadata["batch_id"] = f"batch-{uuid.uuid4()}"
+
+            bulk_notification.metadata["batch_size"] = len(recipient_groups)
+            bulk_notification.metadata["batch_index"] = recipient_groups.index(recipients) + 1
+
             created_notification = await self.create_notification(bulk_notification)
             notifications.append(created_notification)
-            
+
         return notifications
     
     async def get_notification(self, notification_id: str) -> Optional[Notification]:

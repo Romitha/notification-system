@@ -1,5 +1,5 @@
 from typing import List, Dict, Any
-from app.models.notification import Notification
+from app.models.notification import Notification,NotificationType
 from app.models.delivery_status import DeliveryStatus
 from app.vendors.firebase import FirebaseClient
 import smtplib
@@ -17,6 +17,7 @@ class EmailHandler:
     async def send(self, notification: Notification) -> List[DeliveryStatus]:
         """Send email notifications to recipients"""
         statuses = []
+        total_recipients = len(notification.recipients)
 
         # Use a fallback ID if notification.id is None
         notification_id = notification.id or f"temp-{uuid.uuid4()}"
@@ -24,9 +25,18 @@ class EmailHandler:
         # Get email template content
         email_content = notification.content
 
+        # Track batch progress
+        is_bulk = notification.type == NotificationType.BULK
+
+        if is_bulk:
+            print(f"📧 Sending bulk email '{notification.title}' to {total_recipients} recipients...")
+
         # Send to each recipient
-        for recipient in notification.recipients:
+        for i, recipient in enumerate(notification.recipients):
             try:
+                if is_bulk and i > 0 and i % 10 == 0:
+                    print(f"📊 Progress: {i}/{total_recipients} emails sent...")
+
                 # Use Firebase or direct SMTP based on configuration
                 if settings.USE_FIREBASE_EMAIL:
                     result = await self.firebase_client.send_email(
@@ -49,7 +59,7 @@ class EmailHandler:
 
                 # Record delivery status - use notification_id instead of notification.id
                 status = DeliveryStatus(
-                    notification_id=notification_id,  # Use our fallback ID if needed
+                    notification_id=notification_id,
                     recipient=recipient,
                     channel="email",
                     status="delivered" if result.get("success") else "failed",
@@ -61,9 +71,9 @@ class EmailHandler:
 
             except Exception as e:
                 # Handle failure
-                print(f"Email sending error: {str(e)}")
+                print(f"Email sending error for {recipient}: {str(e)}")
                 status = DeliveryStatus(
-                    notification_id=notification_id,  # Use our fallback ID here too
+                    notification_id=notification_id,
                     recipient=recipient,
                     channel="email",
                     status="failed",
@@ -71,6 +81,10 @@ class EmailHandler:
                     error_message=str(e)
                 )
                 statuses.append(status)
+
+        if is_bulk:
+            print(
+                f"✅ Completed bulk email batch: {sum(1 for s in statuses if s.status == 'delivered')}/{total_recipients} delivered")
 
         return statuses
 

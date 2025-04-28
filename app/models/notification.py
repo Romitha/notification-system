@@ -1,18 +1,21 @@
 from datetime import datetime
 from enum import Enum
 from typing import List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr  # Added EmailStr here
+
 
 class NotificationType(str, Enum):
     """Types of notifications"""
     SINGLE = "single"
     BULK = "bulk"
 
+
 class Priority(str, Enum):
     """Priority levels for notifications"""
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
+
 
 class DeliveryChannel(str, Enum):
     """Available delivery channels"""
@@ -21,6 +24,7 @@ class DeliveryChannel(str, Enum):
     PUSH = "push"
     NEWSLETTER = "newsletter"
 
+
 class NotificationStatus(str, Enum):
     """Status of a notification"""
     PENDING = "pending"
@@ -28,7 +32,8 @@ class NotificationStatus(str, Enum):
     PROCESSING = "processing"
     DELIVERED = "delivered"
     FAILED = "failed"
-    
+
+
 class Notification(BaseModel):
     """Notification data model"""
     id: Optional[str] = None
@@ -43,7 +48,7 @@ class Notification(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     status: NotificationStatus = NotificationStatus.PENDING
     metadata: Optional[dict] = {}
-    
+
     class Config:
         json_encoders = {
             datetime: lambda dt: dt.isoformat()

@@ -1,0 +1,51 @@
+creating kafka topics
+kafka-topics.sh --bootstrap-server localhost:9092 --create --topic notifications-retry-5m --partitions 3 --replication-factor 1
+kafka-topics.sh --bootstrap-server localhost:9092 --create --topic notifications-retry-30m --partitions 3 --replication-factor 1
+kafka-topics.sh --bootstrap-server localhost:9092 --create --topic notifications-failed --partitions 3 --replication-factor 1
+
+
+
+
+
+git remote add origin https://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@github.com/Romitha/notification-system.git
+https://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@github.com/Romitha/notification-system.git
+
+podman run -d --name zookeeper --network kafka-net -p 2181:2181 -e ZOOKEEPER_CLIENT_PORT=2181 -e ZOOKEEPER_TICK_TIME=2000 docker.io/confluentinc/cp-zookeeper:latest
+
+podman run -d --name kafka --network kafka-net -p 9092:9092 -e KAFKA_BROKER_ID=1 -e KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181 -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 -e KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1 -e KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1 docker.io/confluentinc/cp-kafka:latest
+
+
+curl -X 'POST' 'http://localhost:8000/api/notifications/email' -H 'Content-Type: application/json' -d '{"recipient_email": "user@example.com","subject": "Test Email","content": "This is a test email sent from our notification system!","template_id": "welcome","metadata": {"name": "John Doe"}}'
+
+
+
+
+    def start_consuming(self):
+        """Start consuming notifications from Kafka"""
+        try:
+            print("Starting to consume email notifications...")
+            for message in self.consumer:
+                print('message ', message.value)
+                try:
+                    if not message.value:
+                        print("⚠️ Empty message received, skipping.")
+                        continue
+
+                    notification_data = message.value
+                    print(f"📩 Received notification:", notification_data)
+
+                    # Check if email is in channels
+                    channels = notification_data.get("channels", [])
+                    if "email" in channels or DeliveryChannel.EMAIL.value in channels:
+                        # Convert dict back to Notification object
+                        notification = self._dict_to_notification(notification_data)
+
+                        # Process email notification asynchronously
+                        asyncio.run(self._process_email_notification(notification))
+
+                except Exception as msg_err:
+                    print(f"❌ Error processing message: {msg_err}")
+        except Exception as e:
+            print(f"🔥 Error in consumer loop: {str(e)}")
+        finally:
+            self.consumer.close()
