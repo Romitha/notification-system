@@ -5,6 +5,10 @@ from app.core.notification_service import NotificationService
 from pydantic import BaseModel, EmailStr
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.db.database import get_db
+from app.handlers.sms_handler import SMSHandler
+from datetime import datetime
 import uuid
 router = APIRouter()
 notification_service = NotificationService()
@@ -158,4 +162,93 @@ async def update_notification_status(notification_id: str, status: NotificationS
         )
         return updated_notification
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class SMSNotificationRequest(BaseModel):
+    recipient_phone: str  # In format 947xxxxxxxx
+    message: str
+    mask: Optional[str] = None  # Sender ID
+    campaign_name: Optional[str] = None
+    schedule_time: Optional[datetime] = None
+
+
+@router.post("/sms", response_model=Notification)
+async def send_sms_notification(sms_req: SMSNotificationRequest):
+    """Send a single SMS notification"""
+    try:
+        # Format metadata for Dialog API
+        metadata = {
+            "mask": sms_req.mask,
+            "campaign_name": sms_req.campaign_name
+        }
+
+        # Create notification object
+        notification = Notification(
+            type=NotificationType.SINGLE,
+            priority=Priority.MEDIUM,
+            title=f"SMS to {sms_req.recipient_phone}",
+            content=sms_req.message,
+            channels=[DeliveryChannel.SMS],
+            recipients=[sms_req.recipient_phone],
+            scheduled_time=sms_req.schedule_time,
+            metadata=metadata
+        )
+
+        # Send the notification
+        created_notification = await notification_service.create_notification(notification)
+        return created_notification
+    except Exception as e:
+        print("❌ SMS EXCEPTION:", str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class BulkSMSNotificationRequest(BaseModel):
+    recipient_phones: List[str]  # In format 947xxxxxxxx
+    message: str
+    mask: Optional[str] = None  # Sender ID
+    campaign_name: Optional[str] = None
+    schedule_time: Optional[datetime] = None
+    batch_size: int = 100
+
+
+@router.post("/sms/bulk", response_model=List[Notification])
+async def send_bulk_sms_notification(sms_req: BulkSMSNotificationRequest):
+    """Send a bulk SMS notification with batching"""
+    try:
+        # Format metadata for Dialog API
+        metadata = {
+            "mask": sms_req.mask,
+            "campaign_name": sms_req.campaign_name
+        }
+
+        # Create base notification object
+        notification = Notification(
+            type=NotificationType.BULK,
+            priority=Priority.MEDIUM,
+            title=f"Bulk SMS to {len(sms_req.recipient_phones)} recipients",
+            content=sms_req.message,
+            channels=[DeliveryChannel.SMS],
+            recipients=[],  # Will be set per batch
+            scheduled_time=sms_req.schedule_time,
+            metadata=metadata
+        )
+
+        # Split recipients into batches
+        all_recipients = sms_req.recipient_phones
+        batch_size = min(sms_req.batch_size, 100)  # Limit maximum batch size to 100
+        recipient_groups = [
+            all_recipients[i:i + batch_size]
+            for i in range(0, len(all_recipients), batch_size)
+        ]
+
+        # Send as bulk notification
+        created_notifications = await notification_service.create_bulk_notification(
+            notification, recipient_groups
+        )
+
+        print(f"✅ Created {len(created_notifications)} bulk SMS notification batches")
+        return created_notifications
+
+    except Exception as e:
+        print("❌ BULK SMS EXCEPTION:", str(e))
         raise HTTPException(status_code=500, detail=str(e))

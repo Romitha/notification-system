@@ -1,19 +1,18 @@
+# app/consumers/sms_notification_consumer.py
 from kafka import KafkaConsumer, KafkaProducer
 import json
 from typing import Dict, Any, List
 from app.models.notification import Notification, DeliveryChannel, NotificationType
-from app.handlers.email_handler import EmailHandler
+from app.handlers.sms_handler import SMSHandler
 from app.config import settings
 import asyncio
 from datetime import datetime
 import uuid
 import time
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
 
 
-class EmailNotificationConsumer:
-    """Consumes email notifications from Kafka and processes them"""
+class SMSNotificationConsumer:
+    """Consumes SMS notifications from Kafka and processes them"""
 
     def safe_json_deserializer(self, m):
         if not m:
@@ -32,47 +31,31 @@ class EmailNotificationConsumer:
                 "notifications-low",
                 bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS,
                 value_deserializer=self.safe_json_deserializer,
-                group_id="email-notification-group",
+                group_id="sms-notification-group",
                 auto_offset_reset="earliest"
             )
             self.producer = KafkaProducer(
                 bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS,
                 value_serializer=lambda v: json.dumps(v).encode('utf-8')
             )
-
-            # Setup database connection if configured
-            if hasattr(settings, 'DATABASE_URL') and settings.DATABASE_URL:
-                self.db_enabled = True
-                self.engine = create_async_engine(settings.DATABASE_URL)
-                self.async_session = sessionmaker(
-                    self.engine,
-                    class_=AsyncSession,
-                    expire_on_commit=False
-                )
-            else:
-                self.db_enabled = False
-
-            # Create a default email handler for backward compatibility
-            self.email_handler = EmailHandler()
-
-            print("Email notification consumer initialized successfully")
+            self.sms_handler = SMSHandler()
+            print("SMS notification consumer initialized successfully")
         except Exception as e:
-            print(f"⚠️ Error initializing email consumer: {e}")
+            print(f"⚠️ Error initializing SMS consumer: {e}")
             # Create fallback components to prevent the app from crashing
             self.consumer = None
             self.producer = None
-            self.db_enabled = False
-            self.email_handler = EmailHandler()
+            self.sms_handler = SMSHandler()
 
     def start_consuming(self):
         """Start consuming notifications from Kafka"""
         # Skip if Kafka is not available
         if not self.consumer:
-            print("⚠️ Kafka consumer not available, skipping email consumer startup")
+            print("⚠️ Kafka consumer not available, skipping SMS consumer startup")
             return
 
         try:
-            print("Starting to consume email notifications...")
+            print("Starting to consume SMS notifications...")
             for message in self.consumer:
                 try:
                     notification_data = message.value
@@ -82,14 +65,14 @@ class EmailNotificationConsumer:
 
                     print(f"📩 Received notification:", notification_data)
 
-                    # Check if email is in channels
+                    # Check if SMS is in channels
                     channels = notification_data.get("channels", [])
-                    if "email" in channels or DeliveryChannel.EMAIL.value in channels:
+                    if "sms" in channels or DeliveryChannel.SMS.value in channels:
                         # Convert dict back to Notification object
                         notification = self._dict_to_notification(notification_data)
 
-                        # Process email notification asynchronously
-                        statuses = asyncio.run(self._process_email_notification(notification))
+                        # Process SMS notification asynchronously
+                        statuses = asyncio.run(self._process_sms_notification(notification))
 
                         # Check if any recipients failed
                         has_failures = any(status.status == "failed" for status in statuses)
@@ -133,26 +116,24 @@ class EmailNotificationConsumer:
         finally:
             self.close()
 
-    async def _process_email_notification(self, notification: Notification):
-        """Process an email notification"""
+    async def _process_sms_notification(self, notification: Notification):
+        """Process an SMS notification"""
         try:
             # Log notification type
             if notification.type == NotificationType.BULK:
                 batch_info = f"(Batch {notification.metadata.get('batch_index', '?')}/{notification.metadata.get('batch_size', '?')})"
-                print(
-                    f"📨 Processing BULK email notification {batch_info} with {len(notification.recipients)} recipients")
+                print(f"📨 Processing BULK SMS notification {batch_info} with {len(notification.recipients)} recipients")
             else:
-                print(f"📧 Processing SINGLE email notification to {len(notification.recipients)} recipients")
+                print(f"📧 Processing SINGLE SMS notification to {len(notification.recipients)} recipients")
 
-            # Use regular email handler - no DB session needed
-            email_handler = EmailHandler()
-            statuses = await email_handler.send(notification)
+            # Send SMS
+            statuses = await self.sms_handler.send(notification)
 
             # Log results
             success_count = sum(1 for status in statuses if status.status == "delivered")
             failed_count = len(statuses) - success_count
 
-            print(f"📊 Email delivery results: {success_count} succeeded, {failed_count} failed")
+            print(f"📊 SMS delivery results: {success_count} succeeded, {failed_count} failed")
 
             if failed_count > 0:
                 failed_recipients = [status.recipient for status in statuses if status.status == "failed"]
@@ -161,7 +142,7 @@ class EmailNotificationConsumer:
             return statuses
 
         except Exception as e:
-            print(f"Error processing email notification: {str(e)}")
+            print(f"Error processing SMS notification: {str(e)}")
             raise
 
     def _dict_to_notification(self, data: Dict[str, Any]) -> Notification:
@@ -191,7 +172,7 @@ class EmailNotificationConsumer:
 
         # Ensure we have valid channels and status
         if "channels" not in data_copy or not data_copy["channels"]:
-            data_copy["channels"] = [DeliveryChannel.EMAIL]
+            data_copy["channels"] = [DeliveryChannel.SMS]
 
         if "status" not in data_copy:
             data_copy["status"] = "pending"

@@ -2,7 +2,7 @@ from typing import List
 from app.models.notification import Notification, Priority
 from app.kafka.pipeline import KafkaPipeline
 from fastapi.encoders import jsonable_encoder
-
+from app.config import settings
 class CompositeService:
     """
     Composite service handling multiple notification processing functions:
@@ -17,6 +17,13 @@ class CompositeService:
 
     async def process_notification(self, notification: Notification) -> None:
         """Process a notification through validation, prioritization and send to Kafka pipeline"""
+
+        if any(str(channel).lower() == 'sms' for channel in notification.channels):
+            # Check if we have sender ID/mask in metadata
+            if notification.metadata and "mask" not in notification.metadata:
+                if not notification.metadata:
+                    notification.metadata = {}
+                notification.metadata["mask"] = settings.DIALOG_DEFAULT_MASK
         # 1. Validate notification
         is_valid = await self.validate_notification(notification)
         if not is_valid:

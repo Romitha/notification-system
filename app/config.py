@@ -35,4 +35,15 @@ class Settings(BaseSettings):
     SMTP_FROM_EMAIL: str = os.getenv("SMTP_FROM_EMAIL", "notifications@example.com")
     SMTP_USE_TLS: bool = os.getenv("SMTP_USE_TLS", "True") == "True"
 
+    # Database - use async SQLite for application, sync SQLite for migrations
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./notification_system.db")
+    SYNC_DATABASE_URL: str = os.getenv("SYNC_DATABASE_URL", "sqlite:///./notification_system.db")
+    SQL_ECHO: bool = os.getenv("SQL_ECHO", "False") == "True"
+
+    # Dialog API Settings
+    DIALOG_API_BASE_URL: str = os.getenv("DIALOG_API_BASE_URL", "https://richcommunication.dialog.lk/api")
+    DIALOG_API_USERNAME: str = os.getenv("DIALOG_API_USERNAME", "")
+    DIALOG_API_PASSWORD: str = os.getenv("DIALOG_API_PASSWORD", "")
+    DIALOG_DEFAULT_MASK: str = os.getenv("DIALOG_DEFAULT_MASK", "NOTIFY")
+
 settings = Settings()
