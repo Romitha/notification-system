@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     SQL_ECHO: bool = os.getenv("SQL_ECHO", "False") == "True"
 
     # Dialog API Settings
-    DIALOG_API_BASE_URL: str = os.getenv("DIALOG_API_BASE_URL", "https://richcommunication.dialog.lk/api")
+    DIALOG_API_BASE_URL: str = os.getenv("DIALOG_API_BASE_URL", "https://esms.dialog.lk/api/v2")
     DIALOG_API_USERNAME: str = os.getenv("DIALOG_API_USERNAME", "")
     DIALOG_API_PASSWORD: str = os.getenv("DIALOG_API_PASSWORD", "")
     DIALOG_DEFAULT_MASK: str = os.getenv("DIALOG_DEFAULT_MASK", "NOTIFY")
