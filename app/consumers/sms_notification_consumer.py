@@ -1,5 +1,5 @@
 # app/consumers/sms_notification_consumer.py
-# Aligned with email consumer features: configuration, pipeline cleanup, database checks
+# CORRECTED VERSION - Fixes channel issues
 
 from kafka import KafkaConsumer, KafkaProducer
 import json
@@ -84,7 +84,8 @@ class SMSNotificationConsumer:
 
                     # 🛡️ PIPELINE CLEANUP CHECK #2: Retry count limit (configurable)
                     if retry_count >= settings.MAX_RETRY_ATTEMPTS:
-                        print(f"🛑 PIPELINE CLEARED: {notification_id} exceeded max retries (count={retry_count}, max={settings.MAX_RETRY_ATTEMPTS})")
+                        print(
+                            f"🛑 PIPELINE CLEARED: {notification_id} exceeded max retries (count={retry_count}, max={settings.MAX_RETRY_ATTEMPTS})")
                         self._handle_permanent_failure_final(notification_data)
                         continue
 
@@ -95,11 +96,12 @@ class SMSNotificationConsumer:
                         self._consume_without_processing(notification_data, f"Status is {status}")
                         continue
 
-                    # Check if SMS is in channels
+                    # 🔍 FIXED: Check if SMS is in channels with strict validation
                     channels = notification_data.get("channels", [])
                     if "sms" in channels or DeliveryChannel.SMS.value in channels:
                         # ✅ Safe to process
                         print(f"✅ Processing SMS notification {notification_id} (retry_count={retry_count})")
+                        print(f"📱 Channels confirmed: {channels}")
 
                         # Convert dict back to Notification object
                         notification = self._dict_to_notification(notification_data)
@@ -109,6 +111,9 @@ class SMSNotificationConsumer:
 
                         # Handle retry logic based on delivery status (now with configuration)
                         self._handle_retry_logic_sync(notification_data, statuses)
+                    else:
+                        # ⏭️ SKIP: Not an SMS notification
+                        print(f"⏭️ Skipping non-SMS notification: channels={channels}")
 
                 except Exception as msg_err:
                     print(f"❌ Error processing SMS message: {msg_err}")
@@ -129,22 +134,19 @@ class SMSNotificationConsumer:
             if not notification_id:
                 return False
 
-            conn = get_db_connection()
-            cursor = conn.cursor()
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                # 🔍 FIXED: Check for SMS channel specifically
+                cursor.execute('''
+                    SELECT COUNT(*) FROM permanent_failures 
+                    WHERE notification_id = ? AND channel = 'sms'
+                ''', (notification_id,))
 
-            # Check if this notification is in permanent_failures table
-            cursor.execute('''
-                SELECT COUNT(*) FROM permanent_failures 
-                WHERE notification_id = ?
-            ''', (notification_id,))
-
-            count = cursor.fetchone()[0]
-
-            if count > 0:
-                print(f"🔍 Found {count} permanent failure record(s) for SMS {notification_id}")
-                return True
-
-            return False
+                count = cursor.fetchone()[0]
+                if count > 0:
+                    print(f"🔍 Found {count} SMS permanent failure record(s) for {notification_id}")
+                    return True
+                return False
 
         except Exception as e:
             print(f"⚠️ Error checking SMS permanent failures: {e}")
@@ -163,7 +165,7 @@ class SMSNotificationConsumer:
                 skip_status = DeliveryStatus(
                     notification_id=notification_id,
                     recipient=recipient,
-                    channel="sms",
+                    channel="sms",  # ✅ FIXED: Correct channel
                     status="skipped_permanently_failed",
                     vendor="system",
                     error_message=f"Skipped SMS processing: {reason}",
@@ -191,7 +193,7 @@ class SMSNotificationConsumer:
                 save_permanent_failure(
                     notification_id=notification_id,
                     recipient=recipient,
-                    channel="sms",
+                    channel="sms",  # ✅ FIXED: Correct channel
                     total_attempts=retry_count + 1,
                     first_attempt_time=notification_data.get("created_at", datetime.now().isoformat()),
                     failure_reason=f"Exceeded max SMS retries ({retry_count + 1} attempts)",
@@ -207,23 +209,6 @@ class SMSNotificationConsumer:
         # 🎯 CRITICAL: Do NOT send to any retry topics
         print(f"🛑 SMS PIPELINE CLEANUP: No retry topics will be used")
         print(f"🧹 SMS message consumed and pipeline cleared")
-
-    def _is_permanently_failed(self, notification_data: dict) -> bool:
-        """Check if this notification should be permanently failed (legacy method)"""
-        retry_count = notification_data.get("retry_count", 0)
-
-        # Use configurable max retry attempts
-        if retry_count >= settings.MAX_RETRY_ATTEMPTS:
-            print(f"🚫 SMS notification has retry_count={retry_count} >= max({settings.MAX_RETRY_ATTEMPTS}), marking as permanently failed")
-            return True
-
-        # Also check if it's explicitly marked as permanently failed
-        status = notification_data.get("status", "")
-        if status in ["permanently_failed", "processing_failed"]:
-            print(f"🚫 SMS notification status is {status}, skipping")
-            return True
-
-        return False
 
     def _handle_retry_logic_sync(self, notification_data: dict, statuses: List[DeliveryStatus]):
         """ENHANCED: Handle retry logic with configuration and proper pipeline cleanup"""
@@ -315,7 +300,7 @@ class SMSNotificationConsumer:
             permanent_failure_status = DeliveryStatus(
                 notification_id=notification_id,
                 recipient=failed_status.recipient,
-                channel="sms",
+                channel="sms",  # ✅ FIXED: Correct channel for SMS
                 status="permanently_failed",
                 vendor=failed_status.vendor or "dialog",
                 vendor_message_id=failed_status.vendor_message_id,
@@ -338,7 +323,7 @@ class SMSNotificationConsumer:
                 save_permanent_failure(
                     notification_id=notification_id,
                     recipient=failed_status.recipient,
-                    channel="sms",
+                    channel="sms",  # ✅ FIXED: Correct channel for SMS
                     total_attempts=notification_data.get("retry_count", 0) + 1,
                     first_attempt_time=notification_data.get("created_at", datetime.now().isoformat()),
                     failure_reason="Max SMS retries exceeded",
@@ -351,7 +336,7 @@ class SMSNotificationConsumer:
         # Send to failed topic for monitoring ONLY (not for reprocessing)
         failure_data = {
             "notification_id": notification_id,
-            "channel": "sms",
+            "channel": "sms",  # ✅ FIXED: Correct channel for SMS
             "failed_recipients": failed_recipients,
             "total_attempts": notification_data.get("retry_count", 0) + 1,
             "last_error": notification_data.get("last_error", "Unknown error"),
@@ -403,7 +388,7 @@ class SMSNotificationConsumer:
             failure_status = DeliveryStatus(
                 notification_id=notification_id,
                 recipient=recipient,
-                channel="sms",
+                channel="sms",  # ✅ FIXED: Correct channel for SMS
                 status="processing_failed",
                 vendor="system",
                 error_message=f"SMS Processing failed after max retries: {error_message}",

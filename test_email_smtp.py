@@ -19,7 +19,7 @@ def test_office365_smtp():
     smtp_server = "smtp.office365.com"
     smtp_port = 587
     smtp_username = "systeminfo@otrwheel.com"
-    smtp_password = "Waterfall25!"
+    smtp_password = ""
     from_email = "systeminfo@otrwheel.com"
 
     # Test email details

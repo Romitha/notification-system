@@ -8,23 +8,63 @@ from app.models.delivery_status import DeliveryStatus
 import threading
 from datetime import datetime, timedelta
 import uuid
+from contextlib import contextmanager
 
-# Thread-local storage for our connection
-_local = threading.local()
+# Thread-safe connection pool
+class ConnectionPool:
+    def __init__(self, db_path: str, max_connections: int = 10):
+        self.db_path = db_path
+        self.max_connections = max_connections
+        self._connections = []
+        self._lock = threading.Lock()
+
+    def get_connection(self):
+        with self._lock:
+            if self._connections:
+                return self._connections.pop()
+            else:
+                # ✅ Enable thread safety with check_same_thread=False
+                conn = sqlite3.connect(
+                    self.db_path,
+                    check_same_thread=False,  # 🔑 Critical fix!
+                    timeout=30.0  # Prevent long blocks
+                )
+                conn.row_factory = sqlite3.Row
+                # Enable WAL mode for better concurrency
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=NORMAL")
+                conn.execute("PRAGMA cache_size=10000")
+                return conn
+
+    def return_connection(self, conn):
+        with self._lock:
+            if len(self._connections) < self.max_connections:
+                self._connections.append(conn)
+            else:
+                conn.close()
 
 
+# Global connection pool
+_connection_pool = ConnectionPool('notification_system.db')
+
+
+@contextmanager
 def get_db_connection():
-    """Get a database connection from thread-local storage or create a new one"""
-    if not hasattr(_local, 'connection'):
-        _local.connection = sqlite3.connect('notification_system.db')
-        _local.connection.row_factory = sqlite3.Row
-    return _local.connection
+    """Get a database connection with proper cleanup"""
+    conn = _connection_pool.get_connection()
+    try:
+        yield conn
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        _connection_pool.return_connection(conn)
 
 
 def init_db():
     """Initialize the database with required tables including new failure tracking"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
 
     # Create notifications table
     cursor.execute('''
@@ -121,8 +161,8 @@ def init_db():
 
 def save_notification(notification: Notification):
     """Save a notification to the database"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
 
     # Generate ID if not provided
     if not notification.id:
@@ -166,76 +206,102 @@ def save_notification(notification: Notification):
 
 
 def save_delivery_status(status: DeliveryStatus):
-    """Enhanced save delivery status with retry tracking"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    """Enhanced save delivery status with proper transaction handling"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
 
-    # Determine if this is a final attempt
-    final_attempt = status.status in ["permanently_failed", "processing_failed"]
+        # Determine if this is a final attempt
+        final_attempt = status.status in ["permanently_failed", "processing_failed"]
 
-    cursor.execute('''
-    INSERT INTO delivery_statuses (notification_id, recipient, channel, status, 
-                                 vendor, vendor_message_id, error_message, timestamp,
-                                 retry_count, next_retry_time, final_attempt)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        status.notification_id,
-        status.recipient,
-        status.channel,
-        status.status,
-        status.vendor,
-        status.vendor_message_id,
-        status.error_message,
-        status.timestamp or datetime.now().isoformat(),
-        getattr(status, 'retry_count', 0),
-        getattr(status, 'next_retry_time', None),
-        1 if final_attempt else 0
-    ))
+        try:
+            cursor.execute('''
+            INSERT INTO delivery_statuses (notification_id, recipient, channel, status, 
+                                         vendor, vendor_message_id, error_message, timestamp,
+                                         retry_count, next_retry_time, final_attempt)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                status.notification_id,
+                status.recipient,
+                status.channel,
+                status.status,
+                status.vendor,
+                status.vendor_message_id,
+                status.error_message,
+                status.timestamp or datetime.now().isoformat(),
+                getattr(status, 'retry_count', 0),
+                getattr(status, 'next_retry_time', None),
+                1 if final_attempt else 0
+            ))
 
-    conn.commit()
-    print(f"✅ Saved delivery status: {status.status} for {status.recipient}")
-    return status
+            conn.commit()
+            print(f"✅ Saved delivery status: {status.status} for {status.recipient}")
+            return status
+
+        except sqlite3.IntegrityError as e:
+            print(f"⚠️ Database integrity error: {e}")
+            conn.rollback()
+            raise
+        except Exception as e:
+            print(f"❌ Error saving delivery status: {e}")
+            conn.rollback()
+            raise
 
 
 def save_permanent_failure(notification_id: str, recipient: str, channel: str,
                            total_attempts: int, first_attempt_time: str,
                            failure_reason: str, all_errors: list,
                            notification_data: dict = None):
-    """Save permanent failure details for comprehensive tracking"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    """Save permanent failure with proper locking"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
 
-    # Combine all error messages
-    all_error_messages = " | ".join(all_errors) if all_errors else "No specific errors recorded"
+        try:
+            # Check if already exists to prevent duplicates
+            cursor.execute('''
+            SELECT COUNT(*) FROM permanent_failures 
+            WHERE notification_id = ? AND recipient = ?
+            ''', (notification_id, recipient))
 
-    cursor.execute('''
-    INSERT INTO permanent_failures (notification_id, recipient, channel, total_attempts,
-                                  first_attempt_time, final_attempt_time, failure_reason,
-                                  all_error_messages, notification_data, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        notification_id,
-        recipient,
-        channel,
-        total_attempts,
-        first_attempt_time,
-        datetime.now().isoformat(),
-        failure_reason,
-        all_error_messages,
-        json.dumps(notification_data) if notification_data else None,
-        datetime.now().isoformat()
-    ))
+            if cursor.fetchone()[0] > 0:
+                print(f"ℹ️ Permanent failure already recorded for {notification_id}:{recipient}")
+                return
 
-    conn.commit()
-    print(f"✅ Saved permanent failure record for {recipient} on {channel}")
+            # Combine all error messages
+            all_error_messages = " | ".join(all_errors) if all_errors else "No specific errors recorded"
+
+            cursor.execute('''
+            INSERT INTO permanent_failures (notification_id, recipient, channel, total_attempts,
+                                          first_attempt_time, final_attempt_time, failure_reason,
+                                          all_error_messages, notification_data, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                notification_id,
+                recipient,
+                channel,
+                total_attempts,
+                first_attempt_time,
+                datetime.now().isoformat(),
+                failure_reason,
+                all_error_messages,
+                json.dumps(notification_data) if notification_data else None,
+                datetime.now().isoformat()
+            ))
+
+            conn.commit()
+            print(f"✅ Saved permanent failure record for {recipient} on {channel}")
+
+        except Exception as e:
+            print(f"❌ Error saving permanent failure: {e}")
+            conn.rollback()
+            raise
 
 
 def save_retry_attempt(notification_id: str, recipient: str, channel: str,
                        retry_attempt: int, error_message: str = None,
                        next_retry_scheduled: str = None):
     """Save retry attempt for tracking"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
 
     cursor.execute('''
     INSERT INTO retry_history (notification_id, recipient, channel, retry_attempt,
@@ -258,8 +324,8 @@ def save_retry_attempt(notification_id: str, recipient: str, channel: str,
 
 def get_failure_statistics(channel: str = None, days: int = 7):
     """Get failure statistics for monitoring"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
 
     # Calculate date range
     end_date = datetime.now()
@@ -304,8 +370,8 @@ def get_failure_statistics(channel: str = None, days: int = 7):
 
 def get_recent_failures(limit: int = 50, channel: str = None):
     """Get recent permanent failures for monitoring"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
 
     query = '''
     SELECT notification_id, recipient, channel, total_attempts, 
@@ -342,8 +408,8 @@ def get_recent_failures(limit: int = 50, channel: str = None):
 
 def cleanup_old_records(days_to_keep: int = 30):
     """Clean up old records to prevent database bloat"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
 
     cutoff_date = (datetime.now() - timedelta(days=days_to_keep)).isoformat()
 
@@ -378,8 +444,8 @@ def cleanup_old_records(days_to_keep: int = 30):
 
 def get_notification_status(notification_id: str):
     """Get complete status of a notification including retry history"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
 
     # Get notification details
     cursor.execute('''
@@ -423,8 +489,8 @@ def get_notification_status(notification_id: str):
 
 def get_retry_statistics():
     """Get overall retry statistics"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
 
     # Get retry statistics
     cursor.execute('''
@@ -461,8 +527,8 @@ def get_retry_statistics():
 def is_notification_permanently_failed(notification_id: str) -> bool:
     """Check if notification is permanently failed in database"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
 
         # Check if this notification is in permanent_failures table
         cursor.execute('''
@@ -489,8 +555,8 @@ def is_notification_permanently_failed(notification_id: str) -> bool:
 def check_table_exists(table_name: str) -> bool:
     """Check if a table exists in the database"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
 
         cursor.execute("""
             SELECT name FROM sqlite_master 
@@ -507,8 +573,8 @@ def check_table_exists(table_name: str) -> bool:
 def check_column_exists(table_name: str, column_name: str) -> bool:
     """Check if a column exists in a table"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
 
         cursor.execute(f"PRAGMA table_info({table_name})")
         columns = [column[1] for column in cursor.fetchall()]

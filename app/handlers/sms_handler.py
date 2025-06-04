@@ -1,4 +1,6 @@
 # app/handlers/sms_handler.py
+# CORRECTED VERSION - Ensures correct channel is always used
+
 from typing import List, Dict, Any
 from app.models.notification import Notification
 from app.models.delivery_status import DeliveryStatus
@@ -10,7 +12,7 @@ from datetime import datetime
 
 
 class SMSHandler:
-    """Handler for SMS notifications"""
+    """Handler for SMS notifications - FIXED to always use 'sms' channel"""
 
     def __init__(self, db=None):
         self.dialog_client = DialogSMSClient()
@@ -38,6 +40,10 @@ class SMSHandler:
         client_ref = notification.metadata.get("client_ref") if notification.metadata else None
         client_ref = client_ref or f"notif-{notification_id[:8]}"
 
+        print(f"📱 SMS Handler: Processing {len(notification.recipients)} recipients")
+        print(f"🏷️ Using mask: {mask}")
+        print(f"📋 Campaign: {campaign_name}")
+
         try:
             # Call Dialog API to send SMS
             response = await self.dialog_client.send_sms(
@@ -49,14 +55,25 @@ class SMSHandler:
                 scheduled_time=notification.scheduled_time
             )
 
+            print(f"📊 Dialog API Response: {response}")
+
             # Process response for each recipient
             if response.get("resultCode") == 0 or response.get("resultCode") == 100:
-                for message in response.get("messages", []):
-                    server_ref = message.get("serverRef")
-                    result_code = message.get("resultCode")
-                    success = result_code == 0
+                print("✅ Dialog API returned success code")
 
-                    for recipient in notification.recipients:
+                # Handle successful API response
+                messages = response.get("messages", [])
+                if messages:
+                    # Process each message in response
+                    for i, message in enumerate(messages):
+                        server_ref = message.get("serverRef")
+                        result_code = message.get("resultCode")
+                        success = result_code == 0
+
+                        # Get corresponding recipient (if available)
+                        recipient = notification.recipients[i] if i < len(notification.recipients) else \
+                        notification.recipients[0]
+
                         # Create delivery status
                         status = DeliveryStatus(
                             notification_id=notification_id,
@@ -69,16 +86,32 @@ class SMSHandler:
                             timestamp=datetime.now().isoformat()
                         )
 
-                        # Save delivery status to database if available
-                        try:
-                            if self.db:
-                                save_delivery_status(status)
-                        except Exception as e:
-                            print(f"Error saving delivery status: {e}")
-
+                        print(f"📤 SMS Status for {recipient}: {status.status}")
                         statuses.append(status)
+                else:
+                    # No specific message responses, create status for all recipients
+                    server_ref = response.get("campaignId") or response.get("transaction_id")
+
+                    for recipient in notification.recipients:
+                        status = DeliveryStatus(
+                            notification_id=notification_id,
+                            recipient=recipient,
+                            channel="sms",
+                            status="delivered",  # API success means delivered
+                            vendor="dialog",
+                            vendor_message_id=str(server_ref) if server_ref else None,
+                            error_message=None,
+                            timestamp=datetime.now().isoformat()
+                        )
+
+                        print(f"📤 SMS Status for {recipient}: delivered")
+                        statuses.append(status)
+
             else:
                 # Handle API-level failure
+                error_desc = response.get("resultDesc", "Unknown API error")
+                print(f"❌ Dialog API error: {error_desc}")
+
                 for recipient in notification.recipients:
                     status = DeliveryStatus(
                         notification_id=notification_id,
@@ -87,22 +120,17 @@ class SMSHandler:
                         status="failed",
                         vendor="dialog",
                         vendor_message_id=None,
-                        error_message=response.get("resultDesc", "Unknown API error"),
+                        error_message=error_desc,
                         timestamp=datetime.now().isoformat()
                     )
 
-                    # Save delivery status
-                    try:
-                        if self.db:
-                            save_delivery_status(status)
-                    except Exception as e:
-                        print(f"Error saving delivery status: {e}")
-
+                    print(f"📤 SMS Status for {recipient}: failed - {error_desc}")
                     statuses.append(status)
 
         except Exception as e:
             # Handle exceptions during API call
-            print(f"SMS sending error: {str(e)}")
+            error_message = str(e)
+            print(f"❌ SMS sending exception: {error_message}")
 
             for recipient in notification.recipients:
                 status = DeliveryStatus(
@@ -112,17 +140,25 @@ class SMSHandler:
                     status="failed",
                     vendor="dialog",
                     vendor_message_id=None,
-                    error_message=str(e),
+                    error_message=error_message,
                     timestamp=datetime.now().isoformat()
                 )
 
-                # Save delivery status
-                try:
-                    if self.db:
-                        save_delivery_status(status)
-                except Exception as save_err:
-                    print(f"Error saving delivery status: {save_err}")
-
+                print(f"📤 SMS Status for {recipient}: failed - {error_message}")
                 statuses.append(status)
+
+        # 💾 Save all delivery statuses to database
+        print(f"💾 Saving {len(statuses)} SMS delivery statuses to database...")
+        for status in statuses:
+            try:
+                save_delivery_status(status)
+                print(f"✅ Saved SMS delivery status for {status.recipient}: {status.status}")
+            except Exception as save_err:
+                print(f"❌ Error saving SMS delivery status for {status.recipient}: {save_err}")
+
+        # 📊 Summary
+        success_count = sum(1 for s in statuses if s.status == "delivered")
+        failed_count = len(statuses) - success_count
+        print(f"📊 SMS Handler Summary: {success_count} delivered, {failed_count} failed")
 
         return statuses

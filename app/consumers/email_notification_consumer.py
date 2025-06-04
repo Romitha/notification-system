@@ -127,22 +127,18 @@ class EmailNotificationConsumer:
             if not notification_id:
                 return False
 
-            conn = get_db_connection()
-            cursor = conn.cursor()
+            with get_db_connection() as conn:  # ✅ Use context manager
+                cursor = conn.cursor()
+                cursor.execute('''
+                            SELECT COUNT(*) FROM permanent_failures 
+                            WHERE notification_id = ?
+                        ''', (notification_id,))
 
-            # Check if this notification is in permanent_failures table
-            cursor.execute('''
-                SELECT COUNT(*) FROM permanent_failures 
-                WHERE notification_id = ?
-            ''', (notification_id,))
-
-            count = cursor.fetchone()[0]
-
-            if count > 0:
-                print(f"🔍 Found {count} permanent failure record(s) for {notification_id}")
-                return True
-
-            return False
+                count = cursor.fetchone()[0]
+                if count > 0:
+                    print(f"🔍 Found {count} permanent failure record(s) for {notification_id}")
+                    return True
+                return False
 
         except Exception as e:
             print(f"⚠️ Error checking permanent failures: {e}")

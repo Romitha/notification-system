@@ -1,17 +1,14 @@
-from fastapi import APIRouter, HTTPException, Depends, Query
+import uuid
+from datetime import datetime
 from typing import List, Optional
 
-from app.config import settings
-from app.models.notification import Notification, NotificationStatus, DeliveryChannel, NotificationType, Priority
-from app.core.notification_service import NotificationService
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, EmailStr
-from fastapi.responses import JSONResponse
-from fastapi.encoders import jsonable_encoder
-from sqlalchemy.ext.asyncio import AsyncSession
-from app.db.database import get_db
-from app.handlers.sms_handler import SMSHandler
-from datetime import datetime
-import uuid
+
+from app.config import settings
+from app.core.notification_service import NotificationService
+from app.models.notification import Notification, NotificationStatus, DeliveryChannel, NotificationType, Priority
+
 router = APIRouter()
 notification_service = NotificationService()
 
