@@ -1,5 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Query
 from typing import List, Optional
+
+from app.config import settings
 from app.models.notification import Notification, NotificationStatus, DeliveryChannel, NotificationType, Priority
 from app.core.notification_service import NotificationService
 from pydantic import BaseModel, EmailStr
@@ -178,10 +180,9 @@ async def send_sms_notification(sms_req: SMSNotificationRequest):
     try:
         # Format metadata for Dialog API
         metadata = {
-            "mask": sms_req.mask,
+            "mask": sms_req.mask or settings.DIALOG_DEFAULT_MASK,  # Use default if not provided
             "campaign_name": sms_req.campaign_name
         }
-
         # Create notification object
         notification = Notification(
             type=NotificationType.SINGLE,
@@ -217,7 +218,7 @@ async def send_bulk_sms_notification(sms_req: BulkSMSNotificationRequest):
     try:
         # Format metadata for Dialog API
         metadata = {
-            "mask": sms_req.mask,
+            "mask": sms_req.mask or settings.DIALOG_DEFAULT_MASK,  # Use default if not provided
             "campaign_name": sms_req.campaign_name
         }
 
